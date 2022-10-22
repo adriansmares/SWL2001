@@ -72,13 +72,6 @@
  */
 #define STACK_ID 0
 
-/**
- * @brief Stack credentials
- */
-static const uint8_t user_dev_eui[8]  = USER_LORAWAN_DEVICE_EUI;
-static const uint8_t user_join_eui[8] = USER_LORAWAN_JOIN_EUI;
-static const uint8_t user_app_key[16] = USER_LORAWAN_APP_KEY;
-
 #if defined( SX128X )
 const ralf_t modem_radio = RALF_SX128X_INSTANTIATE( NULL );
 #elif defined( SX126X )
@@ -97,17 +90,16 @@ const ralf_t modem_radio = RALF_LR11XX_INSTANTIATE( NULL );
  * -----------------------------------------------------------------------------
  * --- PRIVATE VARIABLES -------------------------------------------------------
  */
-static volatile bool user_button_is_press = false;  // Flag for button status
-static uint8_t       rx_payload[255]      = { 0 };  // Buffer for rx payload
-static uint8_t       rx_payload_size      = 0;      // Size of the payload in the rx_payload buffer
+static uint32_t alarm_rate           = 0x08;   // Periodic alarm rate in seconds
+static uint8_t  confirmation_rate    = 0x10;   // Confirmed uplinks rate
+static bool     led_state            = false;  // Simulated LED state
+static uint8_t  temperature_state    = 0x12;   // Simulated temperature sensor state
 
 /*
  * -----------------------------------------------------------------------------
  * --- PRIVATE FUNCTIONS DECLARATION -------------------------------------------
  */
-static bool is_joined( void );
 static void get_event( void );
-static void user_button_callback( void* context );
 
 /*
  * -----------------------------------------------------------------------------
@@ -130,45 +122,35 @@ void main_exti( void )
     // called immediatly after the first call to smtc_modem_run_engine because of the reset detection
     smtc_modem_init( &modem_radio, &get_event );
 
-    // Configure Nucleo blue button as EXTI
-    hal_gpio_irq_t nucleo_blue_button = {
-        .context  = NULL,                  // context pass to the callback - not used in this example
-        .callback = user_button_callback,  // callback called when EXTI is triggered
-    };
-    hal_gpio_init_in( PC_13, BSP_GPIO_PULL_MODE_NONE, BSP_GPIO_IRQ_MODE_FALLING, &nucleo_blue_button );
-
     // Re-enable IRQ
     hal_mcu_enable_irq( );
 
     SMTC_HAL_TRACE_INFO( "EXTI example is starting \n" );
 
+    smtc_modem_return_code_t ret = smtc_modem_alarm_start_timer( alarm_rate );
+    if( ret != SMTC_MODEM_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR ( "Failed to start alarm timer: %d\n", ret );
+    }
+
     while( 1 )
     {
         // Execute modem runtime, this function must be recalled in sleep_time_ms (max value, can be recalled sooner)
-        uint32_t sleep_time_ms = smtc_modem_run_engine( );
-
-        // Check if a button has been pressed
-        if( user_button_is_press == true )
-        {
-            // Clear button flag
-            user_button_is_press = false;
-
-            // Check if the device has already joined a network
-            if( is_joined( ) == true )
-            {
-                // Send MCU temperature on port 102
-                uint8_t temperature = ( uint8_t ) smtc_modem_hal_get_temperature( );
-                SMTC_HAL_TRACE_INFO( "MCU temperature : %d \n", temperature );
-                smtc_modem_request_uplink( STACK_ID, 102, false, &temperature, 1 );
-            }
-        }
-        else
-        {
-            // nothing to process, go to sleep (if low power is enabled)
-            hal_mcu_set_sleep_for_ms( sleep_time_ms );
-        }
+        hal_mcu_set_sleep_for_ms( smtc_modem_run_engine( ) );
     }
 }
+
+typedef enum application_f_port_e {
+    application_f_port_uplink   = 102,
+    application_f_port_downlink = 102,
+} application_f_port_t;
+
+typedef enum application_op_code_e {
+    application_op_code_alarm_rate        = 0x01,
+    application_op_code_confirmation_rate = 0x02,
+    application_op_code_led_state         = 0x03,
+    application_op_code_temperature_state = 0x04,
+} application_op_code_t;
 
 /*
  * -----------------------------------------------------------------------------
@@ -199,39 +181,123 @@ static void get_event( void )
         {
         case SMTC_MODEM_EVENT_RESET:
             SMTC_HAL_TRACE_INFO( "Event received: RESET\n" );
-
-            // Set user credentials
-            smtc_modem_set_deveui( stack_id, user_dev_eui );
-            smtc_modem_set_joineui( stack_id, user_join_eui );
-            smtc_modem_set_nwkkey( stack_id, user_app_key );
-            // Set user region
-            smtc_modem_set_region( stack_id, MODEM_EXAMPLE_REGION );
-            // Schedule a Join LoRaWAN network
             smtc_modem_join_network( stack_id );
             break;
 
         case SMTC_MODEM_EVENT_ALARM:
+        {
             SMTC_HAL_TRACE_INFO( "Event received: ALARM\n" );
 
+            smtc_modem_return_code_t ret = smtc_modem_alarm_start_timer( alarm_rate );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR ( "Failed to start alarm timer: %d\n", ret );
+                break;
+            }
+
+            uint32_t status = 0;
+            ret = smtc_modem_get_status( stack_id, &status );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to retrieve status: %d\n", ret );
+                break;
+            }
+            if( ( status & SMTC_MODEM_STATUS_JOINED ) != SMTC_MODEM_STATUS_JOINED )
+            {
+                SMTC_HAL_TRACE_INFO( "Not joined yet\n" );
+                break;
+            }
+
+            const uint8_t mcu_temperature = ( uint8_t ) smtc_modem_hal_get_temperature( );
+            SMTC_HAL_TRACE_INFO( "MCU temperature : %d\n", mcu_temperature );
+
+            // Send MCU temperature on port 102
+            const bool confirmed = smtc_modem_hal_get_random_nb_in_range( 0, 99 ) < confirmation_rate;
+            const uint8_t buffer[] = { mcu_temperature, led_state, temperature_state, confirmation_rate, alarm_rate };
+            ret = smtc_modem_request_uplink( stack_id, application_f_port_uplink, confirmed, buffer, sizeof(buffer) );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to enqueue uplink: %d\n", ret );
+                break;
+            }
+
             break;
+        }
 
         case SMTC_MODEM_EVENT_JOINED:
+        {
             SMTC_HAL_TRACE_INFO( "Event received: JOINED\n" );
             SMTC_HAL_TRACE_INFO( "Modem is now joined \n" );
+
+            smtc_modem_return_code_t ret = smtc_modem_time_start_sync_service( stack_id, SMTC_MODEM_TIME_MAC_SYNC );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to start time sync: %d\n", ret );
+                break;
+            }
+            ret = smtc_modem_lorawan_class_b_request_ping_slot_info ( stack_id );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to request ping slot info: %d\n", ret );
+                break;
+            }
+
             break;
+        }
 
         case SMTC_MODEM_EVENT_TXDONE:
             SMTC_HAL_TRACE_INFO( "Event received: TXDONE\n" );
-            SMTC_HAL_TRACE_INFO( "Transmission done \n" );
+            SMTC_HAL_TRACE_INFO( "Transmission done: %d\n", current_event.event_data.txdone.status );
             break;
 
         case SMTC_MODEM_EVENT_DOWNDATA:
+        {
             SMTC_HAL_TRACE_INFO( "Event received: DOWNDATA\n" );
-            rx_payload_size = ( uint8_t ) current_event.event_data.downdata.length;
-            memcpy( rx_payload, current_event.event_data.downdata.data, rx_payload_size );
-            SMTC_HAL_TRACE_PRINTF( "Data received on port %u\n", current_event.event_data.downdata.fport );
+
+            const uint8_t f_port = current_event.event_data.downdata.fport;
+            const uint16_t rx_payload_size = current_event.event_data.downdata.length;
+            const uint8_t* rx_payload = current_event.event_data.downdata.data;
+
+            SMTC_HAL_TRACE_PRINTF( "Data received on port %u\n", f_port );
             SMTC_HAL_TRACE_ARRAY( "Received payload", rx_payload, rx_payload_size );
+
+            switch( current_event.event_data.downdata.fport )
+            {
+                case application_f_port_downlink:
+                    for( uint8_t i = 0; i + 1 < rx_payload_size; i += 2 )
+                    {
+                        switch( rx_payload[i] )
+                        {
+                            case application_op_code_alarm_rate:
+                                alarm_rate = rx_payload[i + 1];
+                                SMTC_HAL_TRACE_INFO( "Alarm rate updated: %d\n", alarm_rate );
+                                break;
+                            case application_op_code_led_state:
+                                led_state = rx_payload[i + 1] != 0;
+                                SMTC_HAL_TRACE_INFO( "LED updated: %d\n", led_state );
+                                break;
+                            case application_op_code_temperature_state:
+                                temperature_state = rx_payload[i + 1];
+                                SMTC_HAL_TRACE_INFO( "Temperature updated: %d\n", temperature_state );
+                                break;
+                            case application_op_code_confirmation_rate:
+                                confirmation_rate = rx_payload[i + 1];
+                                confirmation_rate = confirmation_rate > 100 ? 100 : confirmation_rate;
+                                SMTC_HAL_TRACE_INFO( "Confirmation rate updated: %d\n", confirmation_rate );
+                                break;
+                            default:
+                                SMTC_HAL_TRACE_ERROR( "Unknown operation code: %d\n", rx_payload[i] );
+                                break;
+                        }
+                    }
+
+                    break;
+                default:
+                    break;
+            }
+
             break;
+        }
 
         case SMTC_MODEM_EVENT_UPLOADDONE:
             SMTC_HAL_TRACE_INFO( "Event received: UPLOADDONE\n" );
@@ -260,6 +326,19 @@ static void get_event( void )
 
         case SMTC_MODEM_EVENT_TIME:
             SMTC_HAL_TRACE_INFO( "Event received: TIME\n" );
+
+            if( current_event.event_data.time.status != SMTC_MODEM_EVENT_TIME_VALID )
+            {
+                break;
+            }
+
+            smtc_modem_return_code_t ret = smtc_modem_set_class( stack_id, SMTC_MODEM_CLASS_B );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to switch to class B: %d\n", ret );
+                break;
+            }
+
             break;
 
         case SMTC_MODEM_EVENT_TIMEOUT_ADR_CHANGED:
@@ -296,50 +375,3 @@ static void get_event( void )
         }
     } while( event_pending_count > 0 );
 }
-
-/**
- * @brief Join status of the product
- *
- * @return Return 1 if the device is joined else 0
- */
-static bool is_joined( void )
-{
-    uint32_t status = 0;
-    smtc_modem_get_status( STACK_ID, &status );
-    if( ( status & SMTC_MODEM_STATUS_JOINED ) == SMTC_MODEM_STATUS_JOINED )
-    {
-        return true;
-    }
-    else
-    {
-        return false;
-    }
-}
-
-/**
- * @brief User callback for button EXTI
- *
- * @param context Define by the user at the init
- */
-static void user_button_callback( void* context )
-{
-    SMTC_HAL_TRACE_INFO( "Button pushed\n" );
-
-    ( void ) context;  // Not used in the example - avoid warning
-
-    static uint32_t last_press_timestamp_ms = 0;
-
-    // Debounce the button press, avoid multiple triggers
-    if( ( int32_t )( smtc_modem_hal_get_time_in_ms( ) - last_press_timestamp_ms ) > 500 )
-    {
-        last_press_timestamp_ms = smtc_modem_hal_get_time_in_ms( );
-        user_button_is_press    = true;
-
-        // When the button is pressed, the device is likely to be in low power mode. In this low power mode
-        // implementation, low power needs to be disabled once to leave the low power loop and process the button
-        // action.
-        hal_mcu_disable_once_low_power_wait( );
-    }
-}
-
-/* --- EOF ------------------------------------------------------------------ */

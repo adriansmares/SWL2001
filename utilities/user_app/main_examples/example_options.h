@@ -58,20 +58,6 @@ extern "C" {
  * --- PUBLIC CONSTANTS --------------------------------------------------------
  */
 
-// clang-format off
-
-/**
- * @brief LoRaWAN User credentials
- */
-#define USER_LORAWAN_DEVICE_EUI     { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
-#define USER_LORAWAN_JOIN_EUI       { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
-#define USER_LORAWAN_APP_KEY        { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, \
-                                      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 }
-                                      
-#define MODEM_EXAMPLE_REGION    SMTC_MODEM_REGION_EU_868
-
-// clang-format on
-
 /*
  * -----------------------------------------------------------------------------
  * --- PUBLIC TYPES ------------------------------------------------------------
