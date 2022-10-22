@@ -33,7 +33,7 @@ LOG_MEM ?= yes
 RADIO ?= nc
 
 #MCU - Must be provided by user
-MCU_FLAGS =? nc
+MCU_FLAGS ?= nc
 
 #-----------------------------------------------------------------------------
 # Internal LBM features management
