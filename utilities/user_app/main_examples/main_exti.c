@@ -126,34 +126,6 @@ void main_exti( void )
 
     SMTC_HAL_TRACE_INFO( "EXTI example is starting \n" );
 
-    smtc_modem_return_code_t ret = smtc_modem_alarm_start_timer( alarm_rate );
-    if( ret != SMTC_MODEM_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR ( "Failed to start alarm timer: %d\n", ret );
-    }
-
-    ret = smtc_modem_dm_set_info_interval( SMTC_MODEM_DM_INFO_INTERVAL_IN_HOUR, 1 );
-    if( ret != SMTC_MODEM_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR( "Failed to set periodic info interval: %d\n", ret );
-    }
-
-    const uint8_t info_fields[] = {
-        SMTC_MODEM_DM_FIELD_STATUS,
-        SMTC_MODEM_DM_FIELD_CHARGE,
-        SMTC_MODEM_DM_FIELD_VOLTAGE,
-        SMTC_MODEM_DM_FIELD_TEMPERATURE,
-        SMTC_MODEM_DM_FIELD_SIGNAL,
-        SMTC_MODEM_DM_FIELD_UP_TIME,
-        SMTC_MODEM_DM_FIELD_RX_TIME,
-        SMTC_MODEM_DM_FIELD_ALMANAC_STATUS,
-    };
-    ret = smtc_modem_dm_set_info_fields( info_fields, sizeof( info_fields ) );
-    if( ret != SMTC_MODEM_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR( "Failed to set periodic info fields: %d\n", ret );
-    }
-
     while( 1 )
     {
         // Execute modem runtime, this function must be recalled in sleep_time_ms (max value, can be recalled sooner)
@@ -200,9 +172,42 @@ static void get_event( void )
         switch( current_event.event_type )
         {
         case SMTC_MODEM_EVENT_RESET:
+        {
             SMTC_HAL_TRACE_INFO( "Event received: RESET\n" );
-            smtc_modem_join_network( stack_id );
+
+            smtc_modem_return_code_t ret = smtc_modem_alarm_start_timer( alarm_rate );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR ( "Failed to start alarm timer: %d\n", ret );
+                break;
+            }
+
+            const uint8_t info_fields[] = {
+                SMTC_MODEM_DM_FIELD_STATUS,
+                SMTC_MODEM_DM_FIELD_CHARGE,
+                SMTC_MODEM_DM_FIELD_VOLTAGE,
+                SMTC_MODEM_DM_FIELD_TEMPERATURE,
+                SMTC_MODEM_DM_FIELD_SIGNAL,
+                SMTC_MODEM_DM_FIELD_UP_TIME,
+                SMTC_MODEM_DM_FIELD_RX_TIME,
+                SMTC_MODEM_DM_FIELD_ALMANAC_STATUS,
+            };
+            ret = smtc_modem_dm_set_info_fields( info_fields, sizeof( info_fields ) );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to set periodic info fields: %d\n", ret );
+                break;
+            }
+
+            ret = smtc_modem_join_network( stack_id );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to join network: %d\n", ret );
+                break;
+            }
+
             break;
+        }
 
         case SMTC_MODEM_EVENT_ALARM:
         {
