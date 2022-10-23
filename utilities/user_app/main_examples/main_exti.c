@@ -91,7 +91,6 @@ const ralf_t modem_radio = RALF_LR11XX_INSTANTIATE( NULL );
  * --- PRIVATE VARIABLES -------------------------------------------------------
  */
 static uint32_t alarm_rate           = 0x08;   // Periodic alarm rate in seconds
-static uint8_t  confirmation_rate    = 0x10;   // Confirmed uplinks rate
 static bool     led_state            = false;  // Simulated LED state
 static uint8_t  temperature_state    = 0x12;   // Simulated temperature sensor state
 
@@ -133,6 +132,28 @@ void main_exti( void )
         SMTC_HAL_TRACE_ERROR ( "Failed to start alarm timer: %d\n", ret );
     }
 
+    ret = smtc_modem_dm_set_info_interval( SMTC_MODEM_DM_INFO_INTERVAL_IN_HOUR, 1 );
+    if( ret != SMTC_MODEM_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to set periodic info interval: %d\n", ret );
+    }
+
+    const uint8_t info_fields[] = {
+        SMTC_MODEM_DM_FIELD_STATUS,
+        SMTC_MODEM_DM_FIELD_CHARGE,
+        SMTC_MODEM_DM_FIELD_VOLTAGE,
+        SMTC_MODEM_DM_FIELD_TEMPERATURE,
+        SMTC_MODEM_DM_FIELD_SIGNAL,
+        SMTC_MODEM_DM_FIELD_UP_TIME,
+        SMTC_MODEM_DM_FIELD_RX_TIME,
+        SMTC_MODEM_DM_FIELD_ALMANAC_STATUS,
+    };
+    ret = smtc_modem_dm_set_info_fields( info_fields, sizeof( info_fields ) );
+    if( ret != SMTC_MODEM_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to set periodic info fields: %d\n", ret );
+    }
+
     while( 1 )
     {
         // Execute modem runtime, this function must be recalled in sleep_time_ms (max value, can be recalled sooner)
@@ -147,9 +168,8 @@ typedef enum application_f_port_e {
 
 typedef enum application_op_code_e {
     application_op_code_alarm_rate        = 0x01,
-    application_op_code_confirmation_rate = 0x02,
-    application_op_code_led_state         = 0x03,
-    application_op_code_temperature_state = 0x04,
+    application_op_code_led_state         = 0x02,
+    application_op_code_temperature_state = 0x03,
 } application_op_code_t;
 
 /*
@@ -212,9 +232,8 @@ static void get_event( void )
             SMTC_HAL_TRACE_INFO( "MCU temperature : %d\n", mcu_temperature );
 
             // Send MCU temperature on port 102
-            const bool confirmed = smtc_modem_hal_get_random_nb_in_range( 0, 99 ) < confirmation_rate;
-            const uint8_t buffer[] = { mcu_temperature, led_state, temperature_state, confirmation_rate, alarm_rate };
-            ret = smtc_modem_request_uplink( stack_id, application_f_port_uplink, confirmed, buffer, sizeof(buffer) );
+            const uint8_t buffer[] = { mcu_temperature, led_state, temperature_state, alarm_rate };
+            ret = smtc_modem_request_uplink( stack_id, application_f_port_uplink, false, buffer, sizeof(buffer) );
             if( ret != SMTC_MODEM_RC_OK )
             {
                 SMTC_HAL_TRACE_ERROR( "Failed to enqueue uplink: %d\n", ret );
@@ -279,11 +298,6 @@ static void get_event( void )
                             case application_op_code_temperature_state:
                                 temperature_state = rx_payload[i + 1];
                                 SMTC_HAL_TRACE_INFO( "Temperature updated: %d\n", temperature_state );
-                                break;
-                            case application_op_code_confirmation_rate:
-                                confirmation_rate = rx_payload[i + 1];
-                                confirmation_rate = confirmation_rate > 100 ? 100 : confirmation_rate;
-                                SMTC_HAL_TRACE_INFO( "Confirmation rate updated: %d\n", confirmation_rate );
                                 break;
                             default:
                                 SMTC_HAL_TRACE_ERROR( "Unknown operation code: %d\n", rx_payload[i] );
@@ -354,8 +368,24 @@ static void get_event( void )
             break;
 
         case SMTC_MODEM_EVENT_ALMANAC_UPDATE:
+        {
             SMTC_HAL_TRACE_INFO( "Event received: ALMANAC_UPDATE\n" );
+
+            if( current_event.event_data.almanac_update.status != SMTC_MODEM_EVENT_ALMANAC_UPDATE_STATUS_REQUESTED )
+            {
+                break;
+            }
+
+            const uint8_t info_fields[] = { SMTC_MODEM_DM_FIELD_ALMANAC_STATUS };
+            smtc_modem_return_code_t ret = smtc_modem_dm_request_single_uplink( info_fields, sizeof( info_fields ) );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to send single DM request: %d\n", ret );
+                break;
+            }
+
             break;
+        }
 
         case SMTC_MODEM_EVENT_USER_RADIO_ACCESS:
             SMTC_HAL_TRACE_INFO( "Event received: USER_RADIO_ACCESS\n" );
