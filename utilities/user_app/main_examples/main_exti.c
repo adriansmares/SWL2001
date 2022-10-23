@@ -392,8 +392,23 @@ static void get_event( void )
             break;
 
         case SMTC_MODEM_EVENT_CLASS_B_PING_SLOT_INFO:
+        {
             SMTC_HAL_TRACE_INFO( "Event received: CLASS_B_PING_SLOT_INFO\n" );
+
+            if( current_event.event_data.class_b_ping_slot_info.status != SMTC_MODEM_EVENT_CLASS_B_PING_SLOT_NOT_ANSWERED )
+            {
+                break;
+            }
+
+            smtc_modem_return_code_t ret = smtc_modem_lorawan_class_b_request_ping_slot_info ( stack_id );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to request ping slot info: %d\n", ret );
+                break;
+            }
+
             break;
+        }
 
         case SMTC_MODEM_EVENT_CLASS_B_STATUS:
             SMTC_HAL_TRACE_INFO( "Event received: CLASS_B_STATUS\n" );
