@@ -124,6 +124,7 @@ ifeq ($(RADIO),sx128x)
 endif
 
 #-----------------------------------------------------------------------------
+-include makefiles/geolocation.mk
 -include makefiles/common.mk
 
 .PHONY: clean_all all help
