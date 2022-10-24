@@ -270,7 +270,6 @@ static void on_time( const uint8_t stack_id, const smtc_modem_event_t* current_e
         SMTC_HAL_TRACE_ERROR( "Failed to initialize GNSS middleware: %d\n", mw_ret );
         return;
     }
-    gnss_mw_set_constellations( GNSS_MW_CONSTELLATION_GPS_BEIDOU );
     gnss_mw_send_bypass( true );
 
     mw_ret = gnss_mw_scan_start( gnss_scan_mode, gnss_scan_rate );
@@ -317,6 +316,7 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
 {
     const uint8_t pending_events = current_event->event_data.middleware_event_status.status;
     const bool scan_done = gnss_mw_has_event( pending_events, GNSS_MW_EVENT_SCAN_DONE );
+    bool repeat_scan = true;
     if( scan_done )
     {
         SMTC_HAL_TRACE_INFO( "GNSS middleware event - SCAN DONE\n" );
@@ -334,6 +334,7 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
         {
             goto gnss_continue;
         }
+        repeat_scan = false;
 
         const uint8_t header_size = 2 * sizeof( uint8_t );
         uint16_t buffer_size = 0;
@@ -425,11 +426,23 @@ gnss_continue:
 
     gnss_mw_clear_pending_events( );
 
-    mw_return_code_t mw_ret = wifi_mw_scan_start( wifi_scan_rate );
-    if( mw_ret != MW_RC_OK )
+    if( repeat_scan )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
-        return;
+        mw_return_code_t mw_ret = gnss_mw_scan_start( gnss_scan_mode, gnss_scan_rate );
+        if( mw_ret != MW_RC_OK )
+        {
+            SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
+            return;
+        }
+    }
+    else
+    {
+        mw_return_code_t mw_ret = wifi_mw_scan_start( wifi_scan_rate );
+        if( mw_ret != MW_RC_OK )
+        {
+            SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
+            return;
+        }
     }
 }
 
