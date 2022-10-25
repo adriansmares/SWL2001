@@ -98,12 +98,15 @@ const ralf_t modem_radio = RALF_LR11XX_INSTANTIATE( NULL );
  * -----------------------------------------------------------------------------
  * --- PRIVATE VARIABLES -------------------------------------------------------
  */
-static smtc_modem_stream_cipher_mode_t stream_cipher_mode      = SMTC_MODEM_STREAM_NO_CIPHER; // Location stream cipher mode
-static uint8_t                         stream_redundancy_ratio = 128;                         // Location stream redundancy ratio
+static const smtc_modem_stream_cipher_mode_t stream_cipher_mode      = SMTC_MODEM_STREAM_NO_CIPHER; // Location stream cipher mode
+static const uint8_t                         stream_redundancy_ratio = 128;                         // Location stream redundancy ratio
 
 static gnss_mw_mode_t gnss_scan_mode = GNSS_MW_MODE_STATIC; // Periodic GNSS scan mode (static/mobile)
-static uint32_t       gnss_scan_rate = 0x00;                // Periodic GNSS scan rate in seconds
-static uint32_t       wifi_scan_rate = 0x00;                // Periodic WiFi scan rate in seconds
+static uint32_t       gnss_scan_rate = 30 * 60;             // Periodic GNSS scan rate in seconds
+static uint32_t       wifi_scan_rate = 30 * 60;             // Periodic WiFi scan rate in seconds
+
+static smtc_modem_dm_info_interval_format_t dm_report_unit = SMTC_MODEM_DM_INFO_INTERVAL_IN_MINUTE; // Device Management reporting interval unit
+static uint8_t                              dm_report_rate = 5;                                     // Device Management reporting interval
 
 /*
  * -----------------------------------------------------------------------------
@@ -132,10 +135,43 @@ void main_exti( void )
     // called immediatly after the first call to smtc_modem_run_engine because of the reset detection
     smtc_modem_init( &modem_radio, &get_event );
 
+    SMTC_HAL_TRACE_INFO( "EXTI example is starting \n" );
+
+    mw_version_t mw_version = { 0 };
+    mw_return_code_t mw_ret = wifi_mw_get_version( &mw_version );
+    if( mw_ret != MW_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to get WiFi middleware version: %d\n", mw_ret );
+        return;
+    }
+    SMTC_HAL_TRACE_INFO( "WiFi middleware version: %d.%d.%d\n", mw_version.major, mw_version.minor, mw_version.patch );
+
+    mw_ret = wifi_mw_init( &modem_radio, STACK_ID );
+    if( mw_ret != MW_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to initialize wifi middleware: %d\n", mw_ret );
+        return;
+    }
+    wifi_mw_send_bypass( true );
+
+    mw_ret = gnss_mw_get_version( &mw_version );
+    if( mw_ret != MW_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to get GNSS middleware version: %d\n", mw_ret );
+        return;
+    }
+    SMTC_HAL_TRACE_INFO( "GNSS middleware version: %d.%d.%d\n", mw_version.major, mw_version.minor, mw_version.patch );
+
+    mw_ret = gnss_mw_init( &modem_radio, STACK_ID );
+    if( mw_ret != MW_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to initialize GNSS middleware: %d\n", mw_ret );
+        return;
+    }
+    gnss_mw_send_bypass( true );
+
     // Re-enable IRQ
     hal_mcu_enable_irq( );
-
-    SMTC_HAL_TRACE_INFO( "EXTI example is starting \n" );
 
     while( 1 )
     {
@@ -158,6 +194,18 @@ typedef enum tlv_record_e {
     tlv_record_wifi               = 0x08,
 } tlv_record_t;
 
+typedef enum application_op_code_e {
+    application_op_code_get_parameters     = 0x01,
+
+    application_op_code_set_gnss_scan_mode = 0x10,
+    application_op_code_set_gnss_scan_rate = 0x11,
+    application_op_code_set_wifi_scan_rate = 0x12,
+    application_op_code_set_dm_report_rate = 0x13,
+
+    application_op_code_request_gnss_scan  = 0x20,
+    application_op_code_request_wifi_scan  = 0x21,
+} application_op_code_t;
+
 /*
  * -----------------------------------------------------------------------------
  * --- PRIVATE FUNCTIONS DEFINITION --------------------------------------------
@@ -165,6 +213,13 @@ typedef enum tlv_record_e {
 
 static void on_reset( const uint8_t stack_id )
 {
+    smtc_modem_return_code_t ret = smtc_modem_dm_set_info_interval( dm_report_unit, dm_report_rate );
+    if( ret != SMTC_MODEM_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to set DM periodic rate: %d\n", ret );
+        return;
+    }
+
     const uint8_t info_fields[] = {
         SMTC_MODEM_DM_FIELD_STATUS,
         SMTC_MODEM_DM_FIELD_CHARGE,
@@ -175,10 +230,24 @@ static void on_reset( const uint8_t stack_id )
         SMTC_MODEM_DM_FIELD_RX_TIME,
         SMTC_MODEM_DM_FIELD_ALMANAC_STATUS,
     };
-    smtc_modem_return_code_t ret = smtc_modem_dm_set_info_fields( info_fields, sizeof( info_fields ) );
+    ret = smtc_modem_dm_set_info_fields( info_fields, sizeof info_fields );
     if( ret != SMTC_MODEM_RC_OK )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to set periodic info fields: %d\n", ret );
+        SMTC_HAL_TRACE_ERROR( "Failed to set DM periodic fields: %d\n", ret );
+        return;
+    }
+
+    ret = smtc_modem_time_start_sync_service( stack_id, SMTC_MODEM_TIME_MAC_SYNC );
+    if( ret != SMTC_MODEM_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to start time sync: %d\n", ret );
+        return;
+    }
+
+    ret = smtc_modem_stream_init( stack_id, application_f_port_stream, stream_cipher_mode, stream_redundancy_ratio );
+    if( ret != SMTC_MODEM_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to start streaming: %d\n", ret );
         return;
     }
 
@@ -192,20 +261,26 @@ static void on_reset( const uint8_t stack_id )
 
 static void on_join( const uint8_t stack_id )
 {
-    smtc_modem_return_code_t ret = smtc_modem_time_start_sync_service( stack_id, SMTC_MODEM_TIME_ALC_SYNC );
+    smtc_modem_return_code_t ret = smtc_modem_lorawan_class_b_request_ping_slot_info( stack_id );
     if( ret != SMTC_MODEM_RC_OK )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to start time sync: %d\n", ret );
-        return;
-    }
-
-    ret = smtc_modem_stream_init( stack_id, application_f_port_stream, stream_cipher_mode, stream_redundancy_ratio );
-    if( ret != SMTC_MODEM_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR( "Failed to start streaming: %d\n", ret );
+        SMTC_HAL_TRACE_ERROR( "Failed to request ping slot info: %d\n", ret );
         return;
     }
 }
+
+#define ENCODE_4BYTES(x) \
+        ( x       ) & 0xFF, \
+        ( x >> 8  ) & 0xFF, \
+        ( x >> 16 ) & 0xFF, \
+        ( x >> 24 ) & 0xFF  \
+
+#define DECODE_4BYTES(x, i) (    \
+        ( ( x )[( i )    ]       ) | \
+        ( ( x )[( i ) + 1] << 8  ) | \
+        ( ( x )[( i ) + 2] << 16 ) | \
+        ( ( x )[( i ) + 3] << 24 )   \
+    )
 
 static void on_down( const uint8_t stack_id, const smtc_modem_event_t* current_event )
 {
@@ -216,16 +291,153 @@ static void on_down( const uint8_t stack_id, const smtc_modem_event_t* current_e
     SMTC_HAL_TRACE_PRINTF( "Data received on port %u\n", f_port );
     SMTC_HAL_TRACE_ARRAY( "Received payload", rx_payload, rx_payload_size );
 
-    switch( current_event->event_data.downdata.fport )
+    switch( f_port )
     {
         case application_f_port_downlink:
         {
-            for( uint8_t i = 0; i + 1 < rx_payload_size; i += 2 )
+            for( uint8_t i = 0; i < rx_payload_size; )
             {
                 switch( rx_payload[i] )
                 {
+                    case application_op_code_get_parameters:
+                    {
+                        const uint8_t buffer[] = {
+                            application_op_code_get_parameters,
+                            gnss_scan_mode,
+                            ENCODE_4BYTES(gnss_scan_rate),
+                            ENCODE_4BYTES(wifi_scan_rate),
+                            ( uint8_t ) smtc_modem_hal_get_temperature(),
+                            dm_report_unit,
+                            dm_report_rate,
+                        };
+                        smtc_modem_return_code_t ret = smtc_modem_request_uplink(
+                            stack_id,
+                            application_f_port_uplink,
+                            false,
+                            buffer,
+                            sizeof buffer
+                        );
+                        if( ret != SMTC_MODEM_RC_OK )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Failed to request uplink: %d\n", ret );
+                        }
+                        i += 1;
+                        break;
+                    }
+
+                    case application_op_code_set_gnss_scan_mode:
+                    {
+                        if ( i + 1 >= rx_payload_size )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Not enough bytes: %d / %d\n", i + 1, rx_payload_size );
+                            i = rx_payload_size;
+                            break;
+                        }
+                        switch( rx_payload[i + 1] )
+                        {
+                            case GNSS_MW_MODE_STATIC:
+                            case GNSS_MW_MODE_MOBILE:
+                                gnss_scan_mode = rx_payload[i + 1];
+                        }
+                        i += 2;
+                        break;
+                    }
+
+                    case application_op_code_set_gnss_scan_rate:
+                    {
+                        if ( i + 4 >= rx_payload_size )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Not enough bytes: %d / %d\n", i + 4, rx_payload_size );
+                            i = rx_payload_size;
+                            break;
+                        }
+                        gnss_scan_rate = DECODE_4BYTES( rx_payload, i + 1 );
+                        i += 5;
+                        break;
+                    }
+
+                    case application_op_code_set_wifi_scan_rate:
+                    {
+                        if ( i + 4 >= rx_payload_size )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Not enough bytes: %d / %d\n", i + 4, rx_payload_size );
+                            i = rx_payload_size;
+                            break;
+                        }
+                        wifi_scan_rate = DECODE_4BYTES( rx_payload, i + 1 );
+                        i += 5;
+                        break;
+                    }
+
+                    case application_op_code_set_dm_report_rate:
+                    {
+                        if ( i + 2 >= rx_payload_size )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Not enough bytes: %d / %d\n", i + 4, rx_payload_size );
+                            i = rx_payload_size;
+                            break;
+                        }
+                        switch( rx_payload[i + 1] )
+                        {
+                            case SMTC_MODEM_DM_INFO_INTERVAL_IN_SECOND:
+                            case SMTC_MODEM_DM_INFO_INTERVAL_IN_DAY:
+                            case SMTC_MODEM_DM_INFO_INTERVAL_IN_HOUR:
+                            case SMTC_MODEM_DM_INFO_INTERVAL_IN_MINUTE:
+                            {
+                                dm_report_unit = ( smtc_modem_dm_info_interval_format_t ) rx_payload[i + 1];
+                                dm_report_rate = rx_payload[i + 2];
+                                smtc_modem_return_code_t ret = smtc_modem_dm_set_info_interval( dm_report_unit, dm_report_rate );
+                                if( ret != SMTC_MODEM_RC_OK )
+                                {
+                                    SMTC_HAL_TRACE_ERROR( "Failed to set DM periodic rate: %d\n", ret );
+                                }
+                                break;
+                            }
+                        }
+                        i += 3;
+                        break;
+                    }
+
+                    case application_op_code_request_gnss_scan:
+                    {
+                        if ( i + 4 >= rx_payload_size )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Not enough bytes: %d / %d\n", i + 4, rx_payload_size );
+                            i = rx_payload_size;
+                            break;
+                        }
+                        const uint32_t delay = DECODE_4BYTES( rx_payload, i + 1 );
+                        mw_return_code_t mw_ret = gnss_mw_scan_start( gnss_scan_mode, delay );
+                        if( mw_ret != MW_RC_OK )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
+                        }
+                        i += 5;
+                        break;
+                    }
+
+                    case application_op_code_request_wifi_scan:
+                    {
+                        if ( i + 4 >= rx_payload_size )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Not enough bytes: %d / %d\n", i + 4, rx_payload_size );
+                            i = rx_payload_size;
+                            break;
+                        }
+                        const uint32_t delay = DECODE_4BYTES( rx_payload, i + 1 );
+
+                        mw_return_code_t mw_ret = wifi_mw_scan_start( delay );
+                        if( mw_ret != MW_RC_OK )
+                        {
+                            SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
+                        }
+                        i += 5;
+                        break;
+                    }
+
                     default:
                         SMTC_HAL_TRACE_ERROR( "Unknown operation code: %d\n", rx_payload[i] );
+                        i = rx_payload_size;
                         break;
                 }
             }
@@ -242,9 +454,6 @@ static void on_down( const uint8_t stack_id, const smtc_modem_event_t* current_e
             }
             break;
         }
-
-        default:
-            break;
     }
 }
 
@@ -255,45 +464,26 @@ static void on_time( const uint8_t stack_id, const smtc_modem_event_t* current_e
         return;
     }
 
-    mw_version_t mw_version = { 0 };
-    mw_return_code_t mw_ret = gnss_mw_get_version( &mw_version );
-    if( mw_ret != MW_RC_OK )
+    smtc_modem_return_code_t ret = smtc_modem_set_class( stack_id, SMTC_MODEM_CLASS_B );
+    if( ret != SMTC_MODEM_RC_OK )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to get GNSS middleware version: %d\n", mw_ret );
+        SMTC_HAL_TRACE_ERROR( "Failed to set modem class: %d\n", ret );
         return;
     }
-    SMTC_HAL_TRACE_INFO( "GNSS middleware version: %d.%d.%d\n", mw_version.major, mw_version.minor, mw_version.patch );
 
-    mw_ret = gnss_mw_init( &modem_radio, stack_id );
+    mw_return_code_t mw_ret = wifi_mw_scan_start( 0 );
     if( mw_ret != MW_RC_OK )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to initialize GNSS middleware: %d\n", mw_ret );
+        SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
         return;
     }
-    gnss_mw_send_bypass( true );
 
-    mw_ret = gnss_mw_scan_start( gnss_scan_mode, gnss_scan_rate );
+    mw_ret = gnss_mw_scan_start( gnss_scan_mode, 0 );
     if( mw_ret != MW_RC_OK )
     {
         SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
         return;
     }
-
-    mw_ret = wifi_mw_get_version( &mw_version );
-    if( mw_ret != MW_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR( "Failed to get WiFi middleware version: %d\n", mw_ret );
-        return;
-    }
-    SMTC_HAL_TRACE_INFO( "WiFi middleware version: %d.%d.%d\n", mw_version.major, mw_version.minor, mw_version.patch );
-
-    mw_ret = wifi_mw_init( &modem_radio, stack_id );
-    if( mw_ret != MW_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR( "Failed to initialize wifi middleware: %d\n", mw_ret );
-        return;
-    }
-    wifi_mw_send_bypass( true );
 }
 
 static void on_almanac_update( const uint8_t stack_id, const smtc_modem_event_t* current_event )
@@ -304,10 +494,25 @@ static void on_almanac_update( const uint8_t stack_id, const smtc_modem_event_t*
     }
 
     const uint8_t info_fields[] = { SMTC_MODEM_DM_FIELD_ALMANAC_STATUS };
-    smtc_modem_return_code_t ret = smtc_modem_dm_request_single_uplink( info_fields, sizeof( info_fields ) );
+    smtc_modem_return_code_t ret = smtc_modem_dm_request_single_uplink( info_fields, sizeof info_fields );
     if( ret != SMTC_MODEM_RC_OK )
     {
         SMTC_HAL_TRACE_ERROR( "Failed to send single DM request: %d\n", ret );
+        return;
+    }
+}
+
+static void on_ping_slot_info( const uint8_t stack_id, const smtc_modem_event_t* current_event )
+{
+    if( current_event->event_data.class_b_ping_slot_info.status == SMTC_MODEM_EVENT_CLASS_B_PING_SLOT_ANSWERED )
+    {
+        return;
+    }
+
+    smtc_modem_return_code_t ret = smtc_modem_lorawan_class_b_request_ping_slot_info( stack_id );
+    if( ret != SMTC_MODEM_RC_OK )
+    {
+        SMTC_HAL_TRACE_ERROR( "Failed to request ping slot info: %d\n", ret );
         return;
     }
 }
@@ -334,7 +539,6 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
         {
             goto gnss_continue;
         }
-        repeat_scan = false;
 
         const uint8_t header_size = 2 * sizeof( uint8_t );
         uint16_t buffer_size = 0;
@@ -345,6 +549,11 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
                 continue;
             }
             buffer_size += header_size + event_data.scan[i].nav_size;
+        }
+
+        if( buffer_size == 0 )
+        {
+            goto gnss_continue;
         }
 
         uint16_t pending = 0, free = 0;
@@ -381,6 +590,8 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
             SMTC_HAL_TRACE_ERROR( "Failed to add stream data: %d\n", ret );
             return;
         }
+
+        repeat_scan = false;
     }
 
 gnss_continue:
@@ -426,23 +637,11 @@ gnss_continue:
 
     gnss_mw_clear_pending_events( );
 
-    if( repeat_scan )
+    mw_return_code_t mw_ret = gnss_mw_scan_start( gnss_scan_mode, repeat_scan ? 0 : gnss_scan_rate );
+    if( mw_ret != MW_RC_OK )
     {
-        mw_return_code_t mw_ret = gnss_mw_scan_start( gnss_scan_mode, gnss_scan_rate );
-        if( mw_ret != MW_RC_OK )
-        {
-            SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
-            return;
-        }
-    }
-    else
-    {
-        mw_return_code_t mw_ret = wifi_mw_scan_start( wifi_scan_rate );
-        if( mw_ret != MW_RC_OK )
-        {
-            SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
-            return;
-        }
+        SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
+        return;
     }
 }
 
@@ -450,6 +649,7 @@ static void on_wifi_middleware( const uint8_t stack_id, const smtc_modem_event_t
 {
     const uint8_t pending_events = current_event->event_data.middleware_event_status.status;
     const bool scan_done = wifi_mw_has_event( pending_events, WIFI_MW_EVENT_SCAN_DONE );
+    bool repeat_scan = true;
     if( scan_done )
     {
         SMTC_HAL_TRACE_INFO( "WiFi middleware event - SCAN DONE\n" );
@@ -500,6 +700,8 @@ static void on_wifi_middleware( const uint8_t stack_id, const smtc_modem_event_t
             SMTC_HAL_TRACE_ERROR( "Failed to add stream data: %d\n", ret );
             return;
         }
+
+        repeat_scan = false;
     }
 
 wifi_continue:
@@ -530,10 +732,10 @@ wifi_continue:
 
     wifi_mw_clear_pending_events( );
 
-    mw_return_code_t mw_ret = gnss_mw_scan_start( gnss_scan_mode, gnss_scan_rate );
+    mw_return_code_t mw_ret = wifi_mw_scan_start( repeat_scan ? 0 : wifi_scan_rate );
     if( mw_ret != MW_RC_OK )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
+        SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
         return;
     }
 }
@@ -634,6 +836,7 @@ static void get_event( void )
 
         case SMTC_MODEM_EVENT_CLASS_B_PING_SLOT_INFO:
             SMTC_HAL_TRACE_INFO( "Event received: CLASS_B_PING_SLOT_INFO\n" );
+            on_ping_slot_info( stack_id, &current_event );
             break;
 
         case SMTC_MODEM_EVENT_CLASS_B_STATUS:

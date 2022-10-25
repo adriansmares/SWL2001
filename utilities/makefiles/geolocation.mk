@@ -18,3 +18,8 @@ ifeq ($(APP_TRACE),yes)
 COMMON_C_DEFS += \
     -DMW_DBG_TRACE=1
 endif
+
+ifeq ($(APP_TRACE),no)
+COMMON_C_DEFS += \
+    -DMW_DBG_TRACE=0
+endif
