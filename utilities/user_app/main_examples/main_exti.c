@@ -102,8 +102,8 @@ static const smtc_modem_stream_cipher_mode_t stream_cipher_mode      = SMTC_MODE
 static const uint8_t                         stream_redundancy_ratio = 128;                         // Location stream redundancy ratio
 
 static gnss_mw_mode_t gnss_scan_mode = GNSS_MW_MODE_STATIC; // Periodic GNSS scan mode (static/mobile)
-static uint32_t       gnss_scan_rate = 30 * 60;             // Periodic GNSS scan rate in seconds
-static uint32_t       wifi_scan_rate = 30 * 60;             // Periodic WiFi scan rate in seconds
+static uint32_t       gnss_scan_rate = 60 * 60;             // Periodic GNSS scan rate in seconds
+static uint32_t       wifi_scan_rate = 60 * 60;             // Periodic WiFi scan rate in seconds
 
 static smtc_modem_dm_info_interval_format_t dm_report_unit = SMTC_MODEM_DM_INFO_INTERVAL_IN_MINUTE; // Device Management reporting interval unit
 static uint8_t                              dm_report_rate = 5;                                     // Device Management reporting interval
