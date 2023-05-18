@@ -98,9 +98,6 @@ const ralf_t modem_radio = RALF_LR11XX_INSTANTIATE( NULL );
  * -----------------------------------------------------------------------------
  * --- PRIVATE VARIABLES -------------------------------------------------------
  */
-static const smtc_modem_stream_cipher_mode_t stream_cipher_mode      = SMTC_MODEM_STREAM_NO_CIPHER; // Location stream cipher mode
-static const uint8_t                         stream_redundancy_ratio = 128;                         // Location stream redundancy ratio
-
 static gnss_mw_mode_t gnss_scan_mode = GNSS_MW_MODE_STATIC; // Periodic GNSS scan mode (static/mobile)
 static uint32_t       gnss_scan_rate = 60 * 60;             // Periodic GNSS scan rate in seconds
 static uint32_t       wifi_scan_rate = 60 * 60;             // Periodic WiFi scan rate in seconds
@@ -181,7 +178,6 @@ void main_exti( void )
 typedef enum application_f_port_e {
     application_f_port_uplink   = 102,
     application_f_port_downlink = 102,
-    application_f_port_stream   = 199,
 } application_f_port_t;
 
 typedef enum tlv_record_e {
@@ -238,13 +234,6 @@ static void on_reset( const uint8_t stack_id )
     if( ret != SMTC_MODEM_RC_OK )
     {
         SMTC_HAL_TRACE_ERROR( "Failed to start time sync: %d\n", ret );
-        return;
-    }
-
-    ret = smtc_modem_stream_init( stack_id, application_f_port_stream, stream_cipher_mode, stream_redundancy_ratio );
-    if( ret != SMTC_MODEM_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR( "Failed to start streaming: %d\n", ret );
         return;
     }
 
@@ -502,7 +491,6 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
 {
     const uint8_t pending_events = current_event->event_data.middleware_event_status.status;
     const bool scan_done = gnss_mw_has_event( pending_events, GNSS_MW_EVENT_SCAN_DONE );
-    bool repeat_scan = true;
     if( scan_done )
     {
         SMTC_HAL_TRACE_INFO( "GNSS middleware event - SCAN DONE\n" );
@@ -526,16 +514,8 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
                 return;
             }
         }
-
-        if( !event_data.is_valid )
-        {
-            goto gnss_continue;
-        }
-
-        repeat_scan = false;
     }
 
-gnss_continue:
     if( gnss_mw_has_event( pending_events, GNSS_MW_EVENT_TERMINATED ) )
     {
         SMTC_HAL_TRACE_INFO( "GNSS middleware event - TERMINATED\n" );
@@ -580,11 +560,14 @@ gnss_continue:
 
     gnss_mw_clear_pending_events( );
 
-    mw_return_code_t mw_ret = gnss_mw_scan_start( gnss_scan_mode, repeat_scan ? 0 : gnss_scan_rate );
-    if( mw_ret != MW_RC_OK )
+    if( !scan_done )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
-        return;
+        mw_return_code_t mw_ret = gnss_mw_scan_start( gnss_scan_mode, gnss_scan_rate );
+        if( mw_ret != MW_RC_OK )
+        {
+            SMTC_HAL_TRACE_ERROR( "Failed to start GNSS scan: %d\n", mw_ret );
+            return;
+        }
     }
 }
 
@@ -592,7 +575,6 @@ static void on_wifi_middleware( const uint8_t stack_id, const smtc_modem_event_t
 {
     const uint8_t pending_events = current_event->event_data.middleware_event_status.status;
     const bool scan_done = wifi_mw_has_event( pending_events, WIFI_MW_EVENT_SCAN_DONE );
-    bool repeat_scan = true;
     if( scan_done )
     {
         SMTC_HAL_TRACE_INFO( "WiFi middleware event - SCAN DONE\n" );
@@ -605,16 +587,8 @@ static void on_wifi_middleware( const uint8_t stack_id, const smtc_modem_event_t
             return;
         }
         wifi_mw_display_results( &event_data );
-
-        if( event_data.nbr_results == 0 )
-        {
-            goto wifi_continue;
-        }
-
-        repeat_scan = false;
     }
 
-wifi_continue:
     if( wifi_mw_has_event( pending_events, WIFI_MW_EVENT_TERMINATED ) )
     {
         SMTC_HAL_TRACE_INFO( "WiFi middleware event - TERMINATED\n" );
@@ -642,11 +616,14 @@ wifi_continue:
 
     wifi_mw_clear_pending_events( );
 
-    mw_return_code_t mw_ret = wifi_mw_scan_start( repeat_scan ? 0 : wifi_scan_rate );
-    if( mw_ret != MW_RC_OK )
+    if( !scan_done )
     {
-        SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
-        return;
+        mw_return_code_t mw_ret = wifi_mw_scan_start( wifi_scan_rate );
+        if( mw_ret != MW_RC_OK )
+        {
+            SMTC_HAL_TRACE_ERROR( "Failed to start WiFi scan: %d\n", mw_ret );
+            return;
+        }
     }
 }
 
