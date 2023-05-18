@@ -152,7 +152,6 @@ void main_exti( void )
         SMTC_HAL_TRACE_ERROR( "Failed to initialize wifi middleware: %d\n", mw_ret );
         return;
     }
-    wifi_mw_send_bypass( true );
 
     mw_ret = gnss_mw_get_version( &mw_version );
     if( mw_ret != MW_RC_OK )
@@ -168,7 +167,6 @@ void main_exti( void )
         SMTC_HAL_TRACE_ERROR( "Failed to initialize GNSS middleware: %d\n", mw_ret );
         return;
     }
-    gnss_mw_send_bypass( true );
 
     // Re-enable IRQ
     hal_mcu_enable_irq( );
@@ -183,7 +181,6 @@ void main_exti( void )
 typedef enum application_f_port_e {
     application_f_port_uplink   = 102,
     application_f_port_downlink = 102,
-    application_f_port_solver   = 150,
     application_f_port_stream   = 199,
 } application_f_port_t;
 
@@ -444,13 +441,13 @@ static void on_down( const uint8_t stack_id, const smtc_modem_event_t* current_e
             break;
         }
 
-        case application_f_port_solver:
+        default:
         {
-            mw_return_code_t mw_ret = gnss_mw_set_solver_aiding_position( rx_payload, rx_payload_size );
+            mw_return_code_t mw_ret = gnss_mw_handle_downlink( f_port, rx_payload, rx_payload_size );
             if( mw_ret != MW_RC_OK )
             {
-                SMTC_HAL_TRACE_ERROR( "Failed to push solver aid: %d\n", mw_ret );
-                break;
+                SMTC_HAL_TRACE_ERROR( "Failed to handle downlink: %d\n", mw_ret );
+                return;
             }
             break;
         }
@@ -486,22 +483,6 @@ static void on_time( const uint8_t stack_id, const smtc_modem_event_t* current_e
     }
 }
 
-static void on_almanac_update( const uint8_t stack_id, const smtc_modem_event_t* current_event )
-{
-    if( current_event->event_data.almanac_update.status != SMTC_MODEM_EVENT_ALMANAC_UPDATE_STATUS_REQUESTED )
-    {
-        return;
-    }
-
-    const uint8_t info_fields[] = { SMTC_MODEM_DM_FIELD_ALMANAC_STATUS };
-    smtc_modem_return_code_t ret = smtc_modem_dm_request_single_uplink( info_fields, sizeof info_fields );
-    if( ret != SMTC_MODEM_RC_OK )
-    {
-        SMTC_HAL_TRACE_ERROR( "Failed to send single DM request: %d\n", ret );
-        return;
-    }
-}
-
 static void on_ping_slot_info( const uint8_t stack_id, const smtc_modem_event_t* current_event )
 {
     if( current_event->event_data.class_b_ping_slot_info.status == SMTC_MODEM_EVENT_CLASS_B_PING_SLOT_ANSWERED )
@@ -533,62 +514,22 @@ static void on_gnss_middleware( const uint8_t stack_id, const smtc_modem_event_t
             SMTC_HAL_TRACE_ERROR( "Failed to get GNSS event data: %d\n", mw_ret );
             return;
         }
-        gnss_mw_display_results( event_data );
+        gnss_mw_display_results( &event_data );
+
+        if( event_data.context.almanac_update_required )
+        {
+            const uint8_t info_fields[] = { SMTC_MODEM_DM_FIELD_ALMANAC_STATUS };
+            smtc_modem_return_code_t ret = smtc_modem_dm_request_single_uplink( info_fields, sizeof info_fields );
+            if( ret != SMTC_MODEM_RC_OK )
+            {
+                SMTC_HAL_TRACE_ERROR( "Failed to send single DM request: %d\n", ret );
+                return;
+            }
+        }
 
         if( !event_data.is_valid )
         {
             goto gnss_continue;
-        }
-
-        const uint8_t header_size = 2 * sizeof( uint8_t );
-        uint16_t buffer_size = 0;
-        for( int i = 0; i < event_data.nb_scan_valid; i++ )
-        {
-            if( !event_data.scan[i].nav_valid )
-            {
-                continue;
-            }
-            buffer_size += header_size + event_data.scan[i].nav_size;
-        }
-
-        if( buffer_size == 0 )
-        {
-            goto gnss_continue;
-        }
-
-        uint16_t pending = 0, free = 0;
-        smtc_modem_return_code_t ret = smtc_modem_stream_status( stack_id, &pending, &free );
-        if( ret != SMTC_MODEM_RC_OK )
-        {
-            SMTC_HAL_TRACE_ERROR( "Failed to get stream status: %d\n", ret );
-            return;
-        }
-        if( free < buffer_size )
-        {
-            goto gnss_continue;
-        }
-
-        uint8_t buffer[256] = { 0 };
-        uint8_t buffer_offset = 0;
-        for( int i = 0; i < event_data.nb_scan_valid; i++ )
-        {
-            if( !event_data.scan[i].nav_valid )
-            {
-                continue;
-            }
-
-            buffer[buffer_offset    ] = tlv_record_gnss_any_antenna;
-            buffer[buffer_offset + 1] = event_data.scan[i].nav_size;
-            memcpy( &buffer[buffer_offset + 2], event_data.scan[i].nav, event_data.scan[i].nav_size );
-
-            buffer_offset += header_size + event_data.scan[i].nav_size;
-        }
-
-        ret = smtc_modem_stream_add_data( stack_id, buffer, buffer_size );
-        if( ret != SMTC_MODEM_RC_OK )
-        {
-            SMTC_HAL_TRACE_ERROR( "Failed to add stream data: %d\n", ret );
-            return;
         }
 
         repeat_scan = false;
@@ -607,7 +548,9 @@ gnss_continue:
             return;
         }
         SMTC_HAL_TRACE_PRINTF( "TERMINATED info:\n" );
-        SMTC_HAL_TRACE_PRINTF( "-- number of scans sent: %u\n", event_data.nb_scan_sent );
+        SMTC_HAL_TRACE_PRINTF( "-- number of scans sent: %u\n", event_data.nb_scans_sent );
+        SMTC_HAL_TRACE_PRINTF( "-- aiding position check sent: %d\n", event_data.aiding_position_check_sent );
+        SMTC_HAL_TRACE_PRINTF( "-- indoor detected: %d\n", event_data.indoor_detected );
     }
 
     if( gnss_mw_has_event( pending_events, GNSS_MW_EVENT_SCAN_CANCELLED ) )
@@ -661,44 +604,11 @@ static void on_wifi_middleware( const uint8_t stack_id, const smtc_modem_event_t
             SMTC_HAL_TRACE_ERROR( "Failed to get WiFi event data: %d\n", mw_ret );
             return;
         }
-        wifi_mw_display_results( event_data );
+        wifi_mw_display_results( &event_data );
 
         if( event_data.nbr_results == 0 )
         {
             goto wifi_continue;
-        }
-
-        const uint8_t wifi_record_size = 1 + sizeof( lr11xx_wifi_mac_address_t );
-        const uint8_t header_size = 2 * sizeof( uint8_t );
-        const uint16_t buffer_size = header_size + event_data.nbr_results * wifi_record_size;
-
-        uint16_t pending = 0, free = 0;
-        smtc_modem_return_code_t ret = smtc_modem_stream_status( stack_id, &pending, &free );
-        if( ret != SMTC_MODEM_RC_OK )
-        {
-            SMTC_HAL_TRACE_ERROR( "Failed to get stream status: %d\n", ret );
-            return;
-        }
-        if( free < buffer_size )
-        {
-            goto wifi_continue;
-        }
-
-        uint8_t buffer[256] = { 0 };
-        buffer[0] = tlv_record_wifi;
-        buffer[1] = buffer_size - header_size;
-        for( int i = 0; i < event_data.nbr_results; i++ )
-        {
-            const uint16_t offset = header_size + i * wifi_record_size;
-            buffer[offset] = event_data.results[i].rssi;
-            memcpy( &buffer[offset + 1], event_data.results[i].mac_address, sizeof( lr11xx_wifi_mac_address_t ) );
-        }
-
-        ret = smtc_modem_stream_add_data( stack_id, buffer, buffer_size );
-        if( ret != SMTC_MODEM_RC_OK )
-        {
-            SMTC_HAL_TRACE_ERROR( "Failed to add stream data: %d\n", ret );
-            return;
         }
 
         repeat_scan = false;
@@ -717,7 +627,7 @@ wifi_continue:
             return;
         }
         SMTC_HAL_TRACE_PRINTF( "TERMINATED info:\n" );
-        SMTC_HAL_TRACE_PRINTF( "-- number of scans sent: %u\n", event_data.nb_scan_sent );
+        SMTC_HAL_TRACE_PRINTF( "-- number of scans sent: %u\n", event_data.nb_scans_sent );
     }
 
     if( wifi_mw_has_event( pending_events, WIFI_MW_EVENT_SCAN_CANCELLED ) )
@@ -827,7 +737,6 @@ static void get_event( void )
 
         case SMTC_MODEM_EVENT_ALMANAC_UPDATE:
             SMTC_HAL_TRACE_INFO( "Event received: ALMANAC_UPDATE\n" );
-            on_almanac_update( stack_id, &current_event );
             break;
 
         case SMTC_MODEM_EVENT_USER_RADIO_ACCESS:

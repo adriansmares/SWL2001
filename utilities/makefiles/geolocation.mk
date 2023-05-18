@@ -2,6 +2,7 @@ MIDDLEWARE_LOCATION = ../SWSD004
 
 USER_APP_C_SOURCES += \
 	$(MIDDLEWARE_LOCATION)/geolocation_middleware/common/mw_common.c \
+	$(MIDDLEWARE_LOCATION)/geolocation_middleware/gnss/src/lr11xx_driver_extension.c \
 	$(MIDDLEWARE_LOCATION)/geolocation_middleware/gnss/src/gnss_helpers.c \
 	$(MIDDLEWARE_LOCATION)/geolocation_middleware/gnss/src/gnss_queue.c \
 	$(MIDDLEWARE_LOCATION)/geolocation_middleware/gnss/src/gnss_middleware.c \
